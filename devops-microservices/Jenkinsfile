@@ -1,0 +1,93 @@
+
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION = 'us-east-1'
+        ACCOUNT_ID = '014562355563'
+        REGISTRY = '014562355563.dkr.ecr.us-east-1.amazonaws.com'
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Validate') {
+            steps {
+                sh '''
+                    test -f user-service/Dockerfile
+                    test -f product-service/Dockerfile
+                    test -f order-service/Dockerfile
+                    docker compose config
+                '''
+            }
+        }
+
+        stage('Build Docker Images') {
+            steps {
+                sh '''
+                    docker build -t user-service:${BUILD_NUMBER} ./user-service
+                    docker build -t product-service:${BUILD_NUMBER} ./product-service
+                    docker build -t order-service:${BUILD_NUMBER} ./order-service
+                '''
+            }
+        }
+
+        stage('ECR Login') {
+            steps {
+                sh '''
+                    aws ecr get-login-password \
+                    --region $AWS_REGION | \
+                    docker login --username AWS \
+                    --password-stdin $REGISTRY
+                '''
+            }
+        }
+
+        stage('Tag and Push Images') {
+            steps {
+                sh '''
+                    for SERVICE in user-service product-service order-service
+                    do
+                        docker tag $SERVICE:${BUILD_NUMBER} \
+                        $REGISTRY/$SERVICE:${BUILD_NUMBER}
+
+                        docker push $REGISTRY/$SERVICE:${BUILD_NUMBER}
+                    done
+                '''
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                sh '''
+                    export IMAGE_TAG=$BUILD_NUMBER
+
+                    docker compose pull
+
+                    docker compose up -d --remove-orphans
+
+                    sleep 15
+
+                    docker compose ps
+                    curl -f http://localhost/users/health
+                    curl -f http://localhost/products/health
+                    curl -f http://localhost/orders/health
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'Microservices deployment successful!'
+        }
+        failure {
+            echo 'Pipeline failed. Check Jenkins console output.'
+        }
+    }
+}
